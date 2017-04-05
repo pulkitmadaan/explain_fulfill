@@ -1,79 +1,65 @@
 SELECT
 explain.fiu_id as fiu_id, 
-explain.reason as reason,
-explain.inv_type as inv_type, 
-explain.effective_inventory as effective_inventory,
-explain.lpe_tier as lpe_tier,
-explain.lpd as promise_date,
+fu.fulfill_item_unit_destination_pincode as dest_pincode,
 explain.warehouse as warehouse,
-explain.priority as priority,
-explain.sla as sla,
-explain.cost as cost,
+explain.inv_type as inv_type, 
+explain.lpe_tier as lpe_tier,
+explain.effective_inventory as effective_inventory,
 explain.accepted as accepted,
 explain.breaching as breaching,
-explain.rating as rating,
-ff.product_id_key as product_key,
-ff.fulfill_item_service_profile as service_profile,
-ff.fulfill_item_unit_new_shipment_movement_type as new_shipment_movement_type,
-ff.fulfill_item_unit_region as source_id,
-d.full_date as sales_date,
-d.week_num_in_year as week,
-d.month as num_month,
-d.month_name as month,
+explain.reason as reason,
+explain.lpd as logistics_promise_date,
+explain.sla as sla,
+explain.cost as cost,
+fu.product_id_key as product_key,
+fu.fulfill_item_service_profile as service_profile,
+d.full_date as reserve_date,
+d.week_num_in_year as reserve_week,
+d.month as reserve_num_month,
+d.month_name as reserve_month,
 p.product_id as product_id,
-p.node_id as node_id,
 p.analytic_vertical as vertical,
-p.analytic_sub_category as sub_category,
-p.analytic_category as category,
-p.analytic_super_category as super_category,
 p.analytic_business_unit as bu,
-ff.fulfill_item_unit_status_modified as unit_status,
-p.brand as brand,
-p.title as product_title
+p.analytic_super_category as super_category,
+p.analytic_category as category,
+fu.fulfill_item_unit_status_modified as unit_status
 
 FROM bigfoot_external_neo.scp_fulfillment__explain_fulfill_hive_fact as explain
-LEFT JOIN bigfoot_external_neo.scp_fulfillment__fulfillment_unit_hive_fact as ff
-ON ff.fulfill_item_unit_id = explain.fiu_id
+LEFT JOIN bigfoot_external_neo.scp_fulfillment__fulfillment_unit_hive_fact as fu
+ON fu.fulfill_item_unit_id = explain.fiu_id
 LEFT JOIN bigfoot_external_neo.sp_product__product_categorization_hive_dim as p
-ON ff.product_id_key = p.product_categorization_hive_dim_key
+ON fu.product_id_key = p.product_categorization_hive_dim_key
 LEFT JOIN bigfoot_external_neo.sp_seller__seller_hive_dim as seller
-ON seller.seller_hive_dim_key = ff.seller_id_key
+ON seller.seller_hive_dim_key = fu.seller_id_key
 LEFT JOIN bigfoot_external_neo.scp_oms__date_dim_fact as d
-on ff.fulfill_item_unit_reserve_actual_date_key = d.date_dim_key
+on fu.fulfill_item_unit_reserve_actual_date_key = d.date_dim_key
 
 WHERE fulfill_item_unit_status_modified not in ('warehouse_cancellation_requested','customer_cancelled','procurement_cancellation_requested','seller_cancelled')
-and d.month = 3
+and d.date_dim_key = 20170325
 and seller.is_first_party_seller=1
 
 GROUP BY
 explain.fiu_id,
-explain.reason,
-explain.inv_type,
-explain.effective_inventory,
-explain.lpe_tier,
-explain.lpd,
+fu.fulfill_item_unit_destination_pincode,
 explain.warehouse,
-explain.priority,
-explain.sla,
-explain.cost,
+explain.inv_type,
+explain.lpe_tier,
+explain.effective_inventory,
 explain.accepted,
 explain.breaching,
-explain.rating,
-ff.product_id_key,
-ff.fulfill_item_service_profile,
-ff.fulfill_item_unit_new_shipment_movement_type,
-ff.fulfill_item_unit_region,
+explain.reason,
+explain.lpd,
+explain.sla,
+explain.cost,
+fu.product_id_key,
+fu.fulfill_item_service_profile,
 d.full_date,
 d.week_num_in_year,
 d.month,
 d.month_name,
 p.product_id,
-p.node_id,
 p.analytic_vertical,
-p.analytic_sub_category,
-p.analytic_category,
-p.analytic_super_category,
 p.analytic_business_unit,
-ff.fulfill_item_unit_status_modified,
-p.brand,
-p.title
+p.analytic_super_category,
+p.analytic_category,
+fu.fulfill_item_unit_status_modified
