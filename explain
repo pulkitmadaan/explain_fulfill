@@ -1,6 +1,17 @@
-SELECT
-explain.fiu_id as fiu_id, 
-fu.fulfill_item_unit_destination_pincode as dest_pincode,
+library(RODBC)
+library(dplyr)
+
+# Connecting with Hive
+hive_connect <- odbcConnect("Hive_DB")
+
+# Reading lzn files
+lzn <- read.csv("G:\\Pulkit\\Explain_Fulfill\\lzn_21_april.csv")
+lzn_tier <- read.csv("G:\\Pulkit\\Explain_Fulfill\\lzn_21_april_tier.csv")
+lzn_tier <- lzn_tier %>% select(warehouse,dest_pincode,tier,tier_status) 
+
+# Inbound by date
+explain_query <-  "select 
+explain.fiu_id as fiu_id,
 explain.warehouse as warehouse,
 explain.inv_type as inv_type, 
 explain.lpe_tier as lpe_tier,
@@ -11,55 +22,97 @@ explain.reason as reason,
 explain.lpd as logistics_promise_date,
 explain.sla as sla,
 explain.cost as cost,
-fu.product_id_key as product_key,
-fu.fulfill_item_service_profile as service_profile,
+unit_reserve_actual_date_key,
+fu.fulfill_item_unit_destination_pincode as dest_pincode,
+fu.fulfill_item_unit_status_modified as unit_status,
+p.product_id,
+p.analytic_business_unit,
+p.analytic_category,
+p.analytic_sub_category,
+p.analytic_super_category,
+p.analytic_vertical,
+p.brand,
+s.seller_id,
+s.is_first_party_seller,
 d.full_date as reserve_date,
 d.week_num_in_year as reserve_week,
 d.month as reserve_num_month,
-d.month_name as reserve_month,
-p.product_id as product_id,
-p.analytic_vertical as vertical,
-p.analytic_business_unit as bu,
-p.analytic_super_category as super_category,
-p.analytic_category as category,
-fu.fulfill_item_unit_status_modified as unit_status
+d.month_name as reserve_month
 
-FROM bigfoot_external_neo.scp_fulfillment__explain_fulfill_hive_fact as explain
-LEFT JOIN bigfoot_external_neo.scp_fulfillment__fulfillment_unit_hive_fact as fu
+from  bigfoot_external_neo.scp_fulfillment__explain_fulfill_hive_fact as explain
+
+left join bigfoot_external_neo.scp_fulfillment__fulfillment_unit_hive_fact as fu
 ON fu.fulfill_item_unit_id = explain.fiu_id
-LEFT JOIN bigfoot_external_neo.sp_product__product_categorization_hive_dim as p
-ON fu.product_id_key = p.product_categorization_hive_dim_key
-LEFT JOIN bigfoot_external_neo.sp_seller__seller_hive_dim as seller
-ON seller.seller_hive_dim_key = fu.seller_id_key
-LEFT JOIN bigfoot_external_neo.scp_oms__date_dim_fact as d
-on fu.fulfill_item_unit_reserve_actual_date_key = d.date_dim_key
 
-WHERE fulfill_item_unit_status_modified not in ('warehouse_cancellation_requested','customer_cancelled','procurement_cancellation_requested','seller_cancelled')
-and d.date_dim_key = 20170325
-and seller.is_first_party_seller=1
+left join bigfoot_external_neo.sp_product__product_categorization_hive_dim as p
+on explain.product_id_key = p.product_categorization_hive_dim_key
 
-GROUP BY
-explain.fiu_id,
-fu.fulfill_item_unit_destination_pincode,
-explain.warehouse,
-explain.inv_type,
-explain.lpe_tier,
-explain.effective_inventory,
-explain.accepted,
-explain.breaching,
-explain.reason,
-explain.lpd,
-explain.sla,
-explain.cost,
-fu.product_id_key,
-fu.fulfill_item_service_profile,
-d.full_date,
-d.week_num_in_year,
-d.month,
-d.month_name,
-p.product_id,
-p.analytic_vertical,
-p.analytic_business_unit,
-p.analytic_super_category,
-p.analytic_category,
-fu.fulfill_item_unit_status_modified
+left join bigfoot_external_neo.sp_seller__seller_hive_dim as s
+on explain.seller_id_key=s.seller_hive_dim_key
+
+left join bigfoot_external_neo.scp_oms__date_dim_fact as d
+on explain.unit_reserve_actual_date_key = d.date_dim_key
+
+where fulfill_item_unit_status_modified not in ('warehouse_cancellation_requested','customer_cancelled','procurement_cancellation_requested','seller_cancelled')
+and unit_reserve_actual_date_key > 20170410"
+
+
+explain_ff_data <- sqlQuery(hive_connect,explain_query)
+colnames(explain_ff_data)<-gsub(".*\\.(.*)", "\\1", colnames(explain_ff_data))
+
+#Checking and comparing the  Alpha unit distribution in explain promise with fulfillment unit hive fact
+explain_ff_data%>%filter(is_first_party_seller==1)%>%group_by(reserve_date)%>%summarise(units=n_distinct(fiu_id))
+Alpha_units <-sqlQuery(hive_connect,"select count(distinct fulfill_item_unit_id ) as units,fulfill_item_unit_reserve_actual_date_key 
+                       from bigfoot_external_neo.scp_fulfillment__fulfillment_unit_hive_fact as ff
+                       left outer join bigfoot_external_neo.sp_seller__seller_hive_dim seller
+                       on seller.seller_hive_dim_key = ff.seller_id_key
+                       where is_first_party_seller=1 and 
+                       fulfill_item_unit_status_modified not in ('warehouse_cancellation_requested','customer_cancelled',
+                       'procurement_cancellation_requested','seller_cancelled') and 
+                       fulfill_item_unit_reserve_actual_date_key >20170410
+                       group by fulfill_item_unit_reserve_actual_date_key")
+
+#Fetching the lzn mapping
+explain_data <- left_join(explain_ff_data,lzn, by=c("dest_pincode"="dest_pincode","warehouse"="warehouse")) %>%
+  left_join(lzn_tier,by=c("dest_pincode"="dest_pincode","warehouse"="warehouse",
+                          "lpe_tier"="tier")) %>%
+  mutate(tier_status=ifelse(is.na(tier_status),0,tier_status)) #removing NAs from tier_status
+
+
+# Checking NAs in overall data & ekl data
+lzn_unique <- as.data.frame(unique(explain_data$lzn))
+lzn_na <- sum(is.na(explain_data$lzn))
+ekl_na <- explain_data %>%
+  filter(is_first_party_seller==1) %>%
+  sum(is.na(lzn))
+
+#identifying the national fiu ids for alpha sellers (ru loss)
+nat_1 <- explain_data %>%
+  filter(lzn %in% c("N1","N2") & accepted==1 & is_first_party_seller==1) %>%
+  select(fiu_id:lpe_tier,lzn,reason, effective_inventory:breaching,logistics_promise_date:cost,seller_id,
+         unit_status:seller_id,reserve_week:reserve_month)
+
+#Identifying the PE issue
+lz_issue <- explain_data%>%
+  filter(fiu_id %in% nat_1$fiu_id & (lzn %in% c("L1","L2","Z1","Z2")) & effective_inventory>0 
+         & is_first_party_seller==1)
+
+#Counting the PE issues
+pe_issue_units <- lz_issue%>%group_by(reserve_date,reason,inv_type,lpe_tier,analytic_business_unit,
+                                      analytic_category,analytic_sub_category,analytic_super_category,
+                                      analytic_vertical,tier_status)%>%summarise(pe_issue_units=n_distinct(fiu_id))
+
+lz_issue_select <- lz_issue %>%
+  select(fiu_id:lpe_tier, tier_status, dest_pincode,dest_city,dest_zone, lzn,reason, effective_inventory:breaching,
+         reserve_date,logistics_promise_date:cost)
+
+#For each fiu id, adding the national fulfillment details in the lz_issue table
+names(lz_issue_select) <- paste0("lz_", names(lz_issue_select) )
+names(nat_1) <- paste0("N_accepted_", names(nat_1) )
+pe_issue<-lz_issue_select%>%left_join(nat_1,by=c("lz_fiu_id"="N_accepted_fiu_id"))%>%
+  rename(fiu_id=lz_fiu_id)
+
+write.csv(pe_issue_units,"G:\\Pulkit\\Explain_Fulfill\\pe_issue_units.csv")
+write.csv(lz_issue,"G:\\Pulkit\\Explain_Fulfill\\lz_issue.csv")
+write.csv(pe_issue,"G:\\Pulkit\\Explain_Fulfill\\pe_issue.csv")
+write.csv(nat_1,"G:\\Pulkit\\Explain_Fulfill\\nat.csv")
